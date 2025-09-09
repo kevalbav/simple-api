@@ -1,22 +1,75 @@
-from fastapi import FastAPI
-from fastapi.middleware.cors import CORSMiddleware
-from googleapiclient.discovery import build
 import os
-import sqlalchemy
-from sqlalchemy import create_engine, Column, Integer, BigInteger, String, DateTime
-from sqlalchemy.orm import sessionmaker
-from sqlalchemy.ext.declarative import declarative_base
+from typing import Optional
 from datetime import datetime
 
+from fastapi import Depends, FastAPI
+from fastapi.middleware.cors import CORSMiddleware
+from sqlalchemy import create_engine, Column, Integer, BigInteger, String, DateTime, Boolean
+from sqlalchemy.orm import sessionmaker
+from sqlalchemy.ext.declarative import declarative_base
+
+from fastapi_users import schemas, models
+from fastapi_users.db import SQLAlchemyBaseUserTable, SQLAlchemyUserDatabase
+from fastapi_users.authentication import AuthenticationBackend, CookieTransport, JWTStrategy
+from fastapi_users.fastapi_users import FastAPIUsers
+
+# --- DATABASE SETUP (Slightly modified for async) ---
+DATABASE_URL = os.getenv("DATABASE_URL")
+engine = create_engine(DATABASE_URL, connect_args={"sslmode": "require"})
+SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
+Base = declarative_base()
+
+# --- USER MODEL & DATABASE TABLE DEFINITION ---
+class User(models.BaseUser):
+    pass
+
+class UserCreate(schemas.BaseUserCreate):
+    pass
+
+class UserUpdate(schemas.BaseUserUpdate):
+    pass
+
+class UserDB(User, models.BaseUserDB):
+    pass
+    
+class UserTable(Base, SQLAlchemyBaseUserTable):
+    pass
+
+# --- AUTHENTICATION SETUP ---
+SECRET = os.getenv("SECRET_KEY", "a_default_secret_key_for_local_dev") # IMPORTANT: Set this in Render
+
+cookie_transport = CookieTransport(cookie_name="tubemetrics", cookie_max_age=3600)
+
+def get_jwt_strategy() -> JWTStrategy:
+    return JWTStrategy(secret=SECRET, lifetime_seconds=3600)
+
+auth_backend = AuthenticationBackend(
+    name="jwt",
+    transport=cookie_transport,
+    get_strategy=get_jwt_strategy,
+)
+
+# Dependency to get the user DB
+async def get_user_db():
+    yield SQLAlchemyUserDatabase(UserDB, engine, UserTable)
+
+fastapi_users = FastAPIUsers(
+    get_user_db,
+    [auth_backend],
+    User,
+    UserCreate,
+    UserUpdate,
+    UserDB,
+)
+
+# --- FastAPI App Initialization ---
 app = FastAPI()
 
-# --- CORS MIDDLEWARE SETUP ---
+# Add CORS middleware
 origins = [
     "http://localhost:5173",
-    # Add your deployed frontend URL once you have it
-    "https://youtube-dashboard-45e6.onrender.com", 
+    "https://youtube-dashboard-45e6.onrender.com",
 ]
-
 app.add_middleware(
     CORSMiddleware,
     allow_origins=origins,
@@ -25,93 +78,32 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# --- DATABASE SETUP ---
-DATABASE_URL = os.getenv("DATABASE_URL")
-engine = create_engine(DATABASE_URL, connect_args={"sslmode": "require"})
-SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
-Base = declarative_base()
+# --- INCLUDE AUTH ROUTERS ---
+# This automatically creates /login, /register, /logout etc.
+app.include_router(
+    fastapi_users.get_auth_router(auth_backend),
+    prefix="/auth/jwt",
+    tags=["auth"],
+)
+app.include_router(
+    fastapi_users.get_register_router(),
+    prefix="/auth",
+    tags=["auth"],
+)
+# We can add more routers for password reset, etc. later
 
-# --- DATA MODEL DEFINITION ---
-class YouTubeStats(Base):
-    __tablename__ = "youtube_stats"
-    id = Column(Integer, primary_key=True, index=True)
-    timestamp = Column(DateTime, default=datetime.utcnow)
-    subscribers = Column(BigInteger)
-    views = Column(BigInteger)
-    videos = Column(Integer)
+# Create all database tables on startup
+@app.on_event("startup")
+async def on_startup():
+    Base.metadata.create_all(bind=engine)
 
-Base.metadata.create_all(bind=engine)
+# --- Example Protected Endpoint ---
+@app.get("/users/me")
+async def authenticated_route(user: User = Depends(fastapi_users.get_current_active_user)):
+    return {"message": f"Hello {user.email}!"}
 
-# --- YOUTUBE API SETUP ---
-API_KEY = os.getenv("YOUTUBE_API_KEY")
-YOUTUBE_CHANNEL_ID = "UCObWXIaGPPVjX_RJgYDbB1w"
-
-def get_youtube_stats():
-    youtube = build('youtube', 'v3', developerKey=API_KEY)
-    
-    request = youtube.channels().list(
-        part='statistics',
-        id=YOUTUBE_CHANNEL_ID
-    )
-    response = request.execute()
-    
-    # --- MODIFIED PART ---
-    # Check if 'items' exists before trying to access it.
-    if 'items' not in response or not response['items']:
-        # If 'items' is missing, it's an error. Print the whole response to see why.
-        print("YouTube API returned an error:", response) 
-        return {"error": "Channel not found or API error."}
-
-    stats = response['items'][0]['statistics']
-    return {
-        "subscribers": int(stats.get('subscriberCount', 0)),
-        "views": int(stats.get('viewCount', 0)),
-        "videos": int(stats.get('videoCount', 0))
-    }
-
-def save_stats_to_db(stats: dict):
-    db = SessionLocal()
-    try:
-        new_stats = YouTubeStats(
-            subscribers=stats['subscribers'], 
-            views=stats['views'], 
-            videos=stats['videos']
-        )
-        db.add(new_stats)
-        db.commit()
-        db.refresh(new_stats)
-    finally:
-        db.close()
-
-# --- API ENDPOINTS ---
 @app.get("/")
 def read_root():
-  return {"message": "Welcome to the YouTube Metrics API. Go to /stats to see data."}
+  return {"message": "Welcome to the TubeMetrics API"}
 
-@app.get("/stats")
-def get_stats_and_save():
-    stats = get_youtube_stats()
-    if "error" not in stats:
-        save_stats_to_db(stats)
-    return stats
-
-def get_latest_stats_from_db():
-    db = SessionLocal()
-    try:
-        latest = db.query(YouTubeStats).order_by(YouTubeStats.timestamp.desc()).first()
-        return latest
-    finally:
-        db.close()
-
-@app.get("/historical_stats")
-def show_historical_stats():
-    latest_stat = get_latest_stats_from_db()
-    if latest_stat is None:
-        return {"message": "No historical data found. Visit /stats to save the first entry."}
-    
-    return {
-        "last_recorded_on": latest_stat.timestamp,
-        "subscribers": latest_stat.subscribers,
-        "views": latest_stat.views,
-        "videos": latest_stat.videos
-    }
+# Note: The YouTube stats logic will be added back into new, protected endpoints later.
