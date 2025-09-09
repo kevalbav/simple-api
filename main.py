@@ -6,6 +6,8 @@ from sqlalchemy import create_engine, Column, Integer, String, DateTime
 from sqlalchemy.orm import sessionmaker
 from sqlalchemy.ext.declarative import declarative_base
 from datetime import datetime
+from sqlalchemy import create_engine, Column, Integer, String, DateTime, BigInteger
+
 
 # --- DATABASE SETUP ---
 # Render provides the DATABASE_URL environment variable.
@@ -27,8 +29,9 @@ class YouTubeStats(Base):
     
     id = Column(Integer, primary_key=True, index=True)
     timestamp = Column(DateTime, default=datetime.utcnow)
-    subscribers = Column(Integer)
-    views = Column(Integer)
+    # Change Integer to BigInteger for these two columns
+    subscribers = Column(BigInteger)
+    views = Column(BigInteger)
     videos = Column(Integer)
 
 # Create the table in the database if it doesn't exist.
