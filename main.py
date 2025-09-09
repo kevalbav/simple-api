@@ -86,3 +86,27 @@ def get_stats_and_save():
     
     # 3. Return the stats.
     return stats
+
+def get_latest_stats_from_db():
+    db = SessionLocal()
+    try:
+        # Use .order_by() to sort by timestamp and .first() to get the latest one.
+        # This will return None if the table is empty, and will not crash.
+        latest = db.query(YouTubeStats).order_by(YouTubeStats.timestamp.desc()).first()
+        return latest
+    finally:
+        db.close()
+
+# Create a new endpoint to display the historical data
+@app.get("/historical_stats")
+def show_historical_stats():
+    latest_stat = get_latest_stats_from_db()
+    if latest_stat is None:
+        return {"message": "No historical data found. Visit /stats to save the first entry."}
+    
+    return {
+        "last_recorded_on": latest_stat.timestamp,
+        "subscribers": latest_stat.subscribers,
+        "views": latest_stat.views,
+        "videos": latest_stat.videos
+    }
