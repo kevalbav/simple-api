@@ -44,16 +44,24 @@ Base.metadata.create_all(bind=engine)
 
 # --- YOUTUBE API SETUP ---
 API_KEY = os.getenv("YOUTUBE_API_KEY")
-YOUTUBE_CHANNEL_ID = "YOUR_OWN_YOUTUBE_CHANNEL_ID_HERE"
+YOUTUBE_CHANNEL_ID = "UCObWXIaGPPVjX_RJgYDbB1w"
 
 def get_youtube_stats():
     youtube = build('youtube', 'v3', developerKey=API_KEY)
-    request = youtube.channels().list(part='statistics', id=YOUTUBE_CHANNEL_ID)
+    
+    request = youtube.channels().list(
+        part='statistics',
+        id=YOUTUBE_CHANNEL_ID
+    )
     response = request.execute()
     
-    if not response['items']:
-        return {"error": "Channel not found"}
-        
+    # --- MODIFIED PART ---
+    # Check if 'items' exists before trying to access it.
+    if 'items' not in response or not response['items']:
+        # If 'items' is missing, it's an error. Print the whole response to see why.
+        print("YouTube API returned an error:", response) 
+        return {"error": "Channel not found or API error."}
+
     stats = response['items'][0]['statistics']
     return {
         "subscribers": int(stats.get('subscriberCount', 0)),
