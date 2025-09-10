@@ -1,86 +1,50 @@
 import os
 import uuid
-import asyncio
 from datetime import datetime
 from typing import AsyncGenerator
-from fastapi import Depends
-from fastapi_users.manager import BaseUserManager, UUIDIDMixin
-from sqlalchemy import String, Text, Boolean, select
-from pydantic import BaseModel
-from fastapi import HTTPException, status
+from contextlib import asynccontextmanager
 
-from fastapi import Depends, FastAPI
+from fastapi import Depends, FastAPI, HTTPException, status
 from fastapi.middleware.cors import CORSMiddleware
-from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
-from sqlalchemy.orm import declarative_base
-from sqlalchemy import Column, Integer, BigInteger, DateTime, ForeignKey
 
-# FastAPI-Users Imports
+from pydantic import BaseModel
+
+from sqlalchemy import Column, Integer, String, Text, Boolean, DateTime, ForeignKey, select
+from sqlalchemy.dialects.postgresql import UUID
+from sqlalchemy.orm import declarative_base
+from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
+
+# --- FastAPI Users (v13) ---
 from fastapi_users import schemas
 from fastapi_users.db import SQLAlchemyUserDatabase, SQLAlchemyBaseUserTableUUID
 from fastapi_users.authentication import AuthenticationBackend, CookieTransport, JWTStrategy
-from fastapi_users.fastapi_users import FastAPIUsers
-from contextlib import asynccontextmanager
-from sqlalchemy.dialects.postgresql import UUID
+from fastapi_users import FastAPIUsers
+from fastapi_users.manager import BaseUserManager, UUIDIDMixin
 
 
-# --- DATABASE SETUP (Async Version) ---
-DATABASE_URL = os.getenv("DATABASE_URL")
+# =========================
+# Database setup (async)
+# =========================
+DATABASE_URL = os.getenv("DATABASE_URL", "")
+
+# Make sure the URL uses the async driver for Postgres on Render
+# Accepts: postgres://  or postgresql://   -> convert to postgresql+asyncpg://
+if DATABASE_URL.startswith("postgres://"):
+    DATABASE_URL = DATABASE_URL.replace("postgres://", "postgresql+asyncpg://", 1)
+elif DATABASE_URL.startswith("postgresql://") and "asyncpg" not in DATABASE_URL:
+    DATABASE_URL = DATABASE_URL.replace("postgresql://", "postgresql+asyncpg://", 1)
+
 engine = create_async_engine(DATABASE_URL)
 async_session_maker = async_sessionmaker(engine, expire_on_commit=False)
 Base = declarative_base()
 
 
-
-
-# --- DATABASE MODELS ---
+# =========================
+# DB models
+# =========================
 class User(SQLAlchemyBaseUserTableUUID, Base):
+    """User table provided by fastapi-users (UUID PK)."""
     pass
-
-class YouTubeStats(Base):
-    __tablename__ = "youtube_stats"
-    id = Column(Integer, primary_key=True, index=True)
-    timestamp = Column(DateTime, default=datetime.utcnow)
-    subscribers = Column(BigInteger)
-    views = Column(BigInteger)
-    videos = Column(Integer)
-    user_id = Column(UUID(as_uuid=True), ForeignKey("user.id"))
-
-
-# --- PYDANTIC SCHEMAS ---
-class UserRead(schemas.BaseUser[uuid.UUID]):
-    pass
-
-class UserCreate(schemas.BaseUserCreate):
-    pass
-
-class UserUpdate(schemas.BaseUserUpdate):
-    pass
-
-
-# --- DATABASE DEPENDENCY ---
-async def get_async_session() -> AsyncGenerator[AsyncSession, None]:
-    async with async_session_maker() as session:
-        yield session
-
-async def get_user_db(session: AsyncSession = Depends(get_async_session)):
-    yield SQLAlchemyUserDatabase(session, User)
-
-    # simple-api/main.py (below get_user_db)
-class UserManager(UUIDIDMixin, BaseUserManager[User, uuid.UUID]):
-    reset_password_token_secret = os.getenv("SECRET_KEY", "dev-secret")
-    verification_token_secret = os.getenv("SECRET_KEY", "dev-secret")
-
-async def get_user_manager(user_db=Depends(get_user_db)):
-    yield UserManager(user_db)
-
-
-# --- AUTHENTICATION SETUP ---
-SECRET = os.getenv("SECRET_KEY", "a_default_secret_key_for_local_dev")
-cookie_transport = CookieTransport(cookie_name="tubemetrics", 
-    cookie_max_age=3600,cookie_secure=True,
-    cookie_samesite="none",
-    cookie_httponly=True,)
 
 
 class OnboardingProfile(Base):
@@ -88,24 +52,68 @@ class OnboardingProfile(Base):
     id = Column(Integer, primary_key=True, index=True)
     user_id = Column(UUID(as_uuid=True), ForeignKey("user.id"), unique=True, nullable=False)
 
-    role = Column(String(100), nullable=False)                  # e.g., "Solo creator"
-    primary_goal = Column(String(200), nullable=False)          # e.g., "Increase retention"
-    niche = Column(String(200), nullable=True)                  # e.g., "Tech explainers"
-    posting_cadence = Column(String(50), nullable=True)         # e.g., "2/wk"
+    role = Column(String(100), nullable=False)
+    primary_goal = Column(String(200), nullable=False)
+    niche = Column(String(200), nullable=True)
+    posting_cadence = Column(String(50), nullable=True)
     audience_desc = Column(Text, nullable=True)
     is_complete = Column(Boolean, default=True)
 
-    class OnboardingIn(BaseModel):
-        role: str
-        primary_goal: str
-        niche: str | None = None
-        posting_cadence: str | None = None
-        audience_desc: str | None = None
-        is_complete: bool = True
+    created_at = Column(DateTime, default=datetime.utcnow)
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
 
-class OnboardingOut(OnboardingIn):
-    id: int
 
+# =========================
+# Pydantic schemas (User)
+# =========================
+class UserRead(schemas.BaseUser[uuid.UUID]):
+    pass
+
+
+class UserCreate(schemas.BaseUserCreate):
+    pass
+
+
+class UserUpdate(schemas.BaseUserUpdate):
+    pass
+
+
+# =========================
+# DB dependencies
+# =========================
+async def get_async_session() -> AsyncGenerator[AsyncSession, None]:
+    async with async_session_maker() as session:
+        yield session
+
+
+async def get_user_db(session: AsyncSession = Depends(get_async_session)):
+    yield SQLAlchemyUserDatabase(session, User)
+
+
+# =========================
+# User Manager (v13)
+# =========================
+class UserManager(UUIDIDMixin, BaseUserManager[User, uuid.UUID]):
+    reset_password_token_secret = os.getenv("SECRET_KEY", "dev-secret")
+    verification_token_secret = os.getenv("SECRET_KEY", "dev-secret")
+
+
+async def get_user_manager(user_db=Depends(get_user_db)):
+    yield UserManager(user_db)
+
+
+# =========================
+# Auth (cookies + JWT)
+# =========================
+SECRET = os.getenv("SECRET_KEY", "a_default_secret_key_for_local_dev")
+
+cookie_transport = CookieTransport(
+    cookie_name="tubemetrics",
+    cookie_max_age=3600,
+    cookie_secure=True,       # HTTPS on Render
+    cookie_samesite="none",   # allow cross-site (frontend <> backend)
+    cookie_httponly=True,
+)
 
 def get_jwt_strategy() -> JWTStrategy:
     return JWTStrategy(secret=SECRET, lifetime_seconds=3600)
@@ -122,30 +130,39 @@ fastapi_users = FastAPIUsers[User, uuid.UUID](
 )
 
 
-# --- APP LIFESPAN ---
+# =========================
+# App & lifespan
+# =========================
 @asynccontextmanager
 async def lifespan(app: FastAPI):
+    # Auto-create tables (OK for now; switch to Alembic later)
     async with engine.begin() as conn:
         await conn.run_sync(Base.metadata.create_all)
     yield
 
 app = FastAPI(lifespan=lifespan)
 
-# --- CORS MIDDLEWARE (CORRECTLY INCLUDED) ---
+
+# =========================
+# CORS (dev + Render FE)
+# =========================
 origins = [
     "http://localhost:5173",
-    "https://youtube-dashboard-45e6.onrender.com",
+    "https://youtube-dashboard-45e6.onrender.com",  # your Vite FE on Render
 ]
+
 app.add_middleware(
     CORSMiddleware,
     allow_origins=origins,
-    allow_credentials=True,   # <- important
+    allow_credentials=True,   # required for cookie auth
     allow_methods=["*"],
     allow_headers=["*"],
 )
 
 
-# --- API ROUTERS ---
+# =========================
+# Auth routes
+# =========================
 app.include_router(
     fastapi_users.get_auth_router(auth_backend), prefix="/auth/jwt", tags=["auth"]
 )
@@ -154,7 +171,11 @@ app.include_router(
     prefix="/auth",
     tags=["auth"],
 )
-# ---- Onboarding Schemas ----
+
+
+# =========================
+# Onboarding: schemas + routes
+# =========================
 class OnboardingIn(BaseModel):
     role: str
     primary_goal: str
@@ -163,10 +184,11 @@ class OnboardingIn(BaseModel):
     audience_desc: str | None = None
     is_complete: bool = True
 
+
 class OnboardingOut(OnboardingIn):
     id: int
 
-# ---- Onboarding Routes ----
+
 @app.post("/onboarding", response_model=OnboardingOut)
 async def upsert_onboarding(
     payload: OnboardingIn,
@@ -201,6 +223,7 @@ async def upsert_onboarding(
     await session.refresh(profile)
     return profile
 
+
 @app.get("/onboarding/me", response_model=OnboardingOut)
 async def get_my_onboarding(
     user: User = Depends(fastapi_users.current_user()),
@@ -214,12 +237,20 @@ async def get_my_onboarding(
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Onboarding not found")
     return profile
 
-# Root endpoint
+
+# =========================
+# Misc endpoints
+# =========================
 @app.get("/")
 def read_root():
     return {"message": "Welcome to the TubeMetrics API"}
 
-# Example protected endpoint
+
+@app.get("/healthz")
+async def healthz():
+    return {"ok": True}
+
+
 @app.get("/users/me", response_model=UserRead)
 async def authenticated_route(user: User = Depends(fastapi_users.current_user())):
     return user
