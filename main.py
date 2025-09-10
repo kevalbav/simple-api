@@ -1,26 +1,18 @@
 import os
 import uuid
+import asyncio
 from datetime import datetime
-from typing import Optional
+from typing import AsyncGenerator
 
 from fastapi import Depends, FastAPI
 from fastapi.middleware.cors import CORSMiddleware
-from sqlalchemy import (
-    create_engine,
-    Column,
-    Integer,
-    BigInteger,
-    String,
-    DateTime,
-    Boolean,
-    ForeignKey,
-)
-from sqlalchemy.orm import sessionmaker
-from sqlalchemy.ext.declarative import declarative_base
+from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
+from sqlalchemy.orm import declarative_base, sessionmaker
+from sqlalchemy import Column, Integer, BigInteger, DateTime, ForeignKey
 
 # Corrected FastAPI-Users imports for the latest versions
 from fastapi_users import schemas
-from fastapi_users.db import SQLAlchemyBaseUserTableUUID, SQLAlchemyUserDatabase
+from fastapi_users.db import SQLAlchemyUserDatabase, SQLAlchemyBaseUserTableUUID
 from fastapi_users.authentication import (
     AuthenticationBackend,
     CookieTransport,
@@ -28,21 +20,19 @@ from fastapi_users.authentication import (
 )
 from fastapi_users.fastapi_users import FastAPIUsers
 from contextlib import asynccontextmanager
-
-# Google API Client (we will add this back later)
-# from googleapiclient.discovery import build
+from sqlalchemy.dialects.postgresql import UUID
 
 
-# --- DATABASE SETUP ---
+# --- DATABASE SETUP (Async Version) ---
 DATABASE_URL = os.getenv("DATABASE_URL")
-engine = create_engine(DATABASE_URL)
-SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
+engine = create_async_engine(DATABASE_URL)
+async_session_maker = async_sessionmaker(engine, expire_on_commit=False)
 Base = declarative_base()
 
 
 # --- DATABASE MODELS ---
 
-# The SQLAlchemy model for the 'user' table in the database
+# The SQLAlchemy model for the 'user' table
 class User(SQLAlchemyBaseUserTableUUID, Base):
     pass
 
@@ -53,10 +43,10 @@ class YouTubeStats(Base):
     subscribers = Column(BigInteger)
     views = Column(BigInteger)
     videos = Column(Integer)
-    user_id = Column(uuid.UUID, ForeignKey("user.id"))
+    user_id = Column(UUID(as_uuid=True), ForeignKey("user.id"))
 
 
-# --- PYDANTIC SCHEMAS (for reading and creating users) ---
+# --- PYDANTIC SCHEMAS ---
 class UserRead(schemas.BaseUser[uuid.UUID]):
     pass
 
@@ -65,6 +55,15 @@ class UserCreate(schemas.BaseUserCreate):
 
 class UserUpdate(schemas.BaseUserUpdate):
     pass
+
+
+# --- DATABASE DEPENDENCY ---
+async def get_async_session() -> AsyncGenerator[AsyncSession, None]:
+    async with async_session_maker() as session:
+        yield session
+
+async def get_user_db(session: AsyncSession = Depends(get_async_session)):
+    yield SQLAlchemyUserDatabase(session, User)
 
 
 # --- AUTHENTICATION SETUP ---
@@ -81,11 +80,6 @@ auth_backend = AuthenticationBackend(
     get_strategy=get_jwt_strategy,
 )
 
-# Dependency to get the user database
-async def get_user_db():
-    yield SQLAlchemyUserDatabase(User, engine)
-
-
 fastapi_users = FastAPIUsers[User, uuid.UUID](
     get_user_db,
     [auth_backend],
@@ -95,13 +89,14 @@ fastapi_users = FastAPIUsers[User, uuid.UUID](
     UserUpdate,
 )
 
-# --- APP LIFESPAN (Modern replacement for on_event) ---
+# --- APP LIFESPAN ---
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     # On startup, create database tables
-    Base.metadata.create_all(bind=engine)
+    async with engine.begin() as conn:
+        await conn.run_sync(Base.metadata.create_all)
     yield
-    # On shutdown (if needed)
+    # On shutdown
 
 app = FastAPI(lifespan=lifespan)
 
