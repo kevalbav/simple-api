@@ -75,7 +75,7 @@ async def get_user_manager(user_db=Depends(get_user_db)):
 # --- AUTHENTICATION SETUP ---
 SECRET = os.getenv("SECRET_KEY", "a_default_secret_key_for_local_dev")
 cookie_transport = CookieTransport(cookie_name="tubemetrics", 
-    cookie_max_age=3600,ookie_secure=True,
+    cookie_max_age=3600,cookie_secure=True,
     cookie_samesite="none",
     cookie_httponly=True,)
 
