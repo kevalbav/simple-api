@@ -1,51 +1,52 @@
 import os
-from typing import Optional
+import uuid
 from datetime import datetime
+from typing import Optional
 
 from fastapi import Depends, FastAPI
 from fastapi.middleware.cors import CORSMiddleware
-from sqlalchemy import create_engine, Column, Integer, BigInteger, String, DateTime, Boolean
+from sqlalchemy import (
+    create_engine,
+    Column,
+    Integer,
+    BigInteger,
+    String,
+    DateTime,
+    Boolean,
+    ForeignKey,
+)
 from sqlalchemy.orm import sessionmaker
 from sqlalchemy.ext.declarative import declarative_base
 
 # Corrected FastAPI-Users imports for the latest versions
-from fastapi_users import models, schemas
-from fastapi_users.db import SQLAlchemyBaseUserTable, SQLAlchemyUserDatabase
-from fastapi_users.authentication import AuthenticationBackend, CookieTransport, JWTStrategy
+from fastapi_users import schemas
+from fastapi_users.db import SQLAlchemyBaseUserTableUUID, SQLAlchemyUserDatabase
+from fastapi_users.authentication import (
+    AuthenticationBackend,
+    CookieTransport,
+    JWTStrategy,
+)
 from fastapi_users.fastapi_users import FastAPIUsers
+from fastapi_users.models import BaseUserDB
 
-# Google API Client
-from googleapiclient.discovery import build
+# Google API Client (optional for now)
+# from googleapiclient.discovery import build
+
 
 # --- DATABASE SETUP ---
 DATABASE_URL = os.getenv("DATABASE_URL")
-engine = create_engine(DATABASE_URL, connect_args={"sslmode": "require"})
+engine = create_engine(DATABASE_URL)  # Removed sslmode for broader compatibility, Render injects it.
 SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
 Base = declarative_base()
 
 
-# --- USER AUTHENTICATION MODELS ---
-# The Pydantic schemas for reading, creating, and updating users
-class UserRead(schemas.BaseUser[int]):
-    pass
-
-class UserCreate(schemas.BaseUserCreate):
-    pass
-
-class UserUpdate(schemas.BaseUserUpdate):
-    pass
+# --- DATABASE MODELS ---
 
 # The SQLAlchemy model for the 'user' table in the database
-class UserTable(Base, SQLAlchemyBaseUserTable):
-     id = Column(Integer, primary_key=True)
-
-
-# Pydantic model for database representation (used internally)
-class UserDB(UserRead, models.BaseUserDB):
+class User(SQLAlchemyBaseUserTableUUID, Base):
     pass
 
 
-# --- YOUTUBE STATS DATABASE MODEL ---
 class YouTubeStats(Base):
     __tablename__ = "youtube_stats"
     id = Column(Integer, primary_key=True, index=True)
@@ -53,6 +54,23 @@ class YouTubeStats(Base):
     subscribers = Column(BigInteger)
     views = Column(BigInteger)
     videos = Column(Integer)
+    # Link to a user
+    user_id = Column(uuid.UUID, ForeignKey("user.id"))
+
+
+# --- PYDANTIC SCHEMAS ---
+
+# Pydantic schemas for reading and creating users
+class UserRead(schemas.BaseUser[uuid.UUID]):
+    pass
+
+
+class UserCreate(schemas.BaseUserCreate):
+    pass
+
+
+class UserUpdate(schemas.BaseUserUpdate):
+    pass
 
 
 # --- AUTHENTICATION SETUP ---
@@ -60,31 +78,42 @@ SECRET = os.getenv("SECRET_KEY", "a_default_secret_key_for_local_dev")
 
 cookie_transport = CookieTransport(cookie_name="tubemetrics", cookie_max_age=3600)
 
+
 def get_jwt_strategy() -> JWTStrategy:
     return JWTStrategy(secret=SECRET, lifetime_seconds=3600)
+
 
 auth_backend = AuthenticationBackend(
     name="jwt",
     transport=cookie_transport,
     get_strategy=get_jwt_strategy,
 )
+from contextlib import asynccontextmanager
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    # Code to run on startup
+    Base.metadata.create_all(bind=engine)
+    yield
+    # Code to run on shutdown (if any)
 
 # Dependency to get the user database
 async def get_user_db():
-    yield SQLAlchemyUserDatabase(UserDB, engine, UserTable)
+    yield SQLAlchemyUserDatabase(User, engine)
 
-# FastAPI-Users instance with corrected schemas
-fastapi_users = FastAPIUsers(
+
+fastapi_users = FastAPIUsers[User, uuid.UUID](
     get_user_db,
     [auth_backend],
-    UserTable,
-    UserRead,
+    User,
     UserCreate,
+    UserRead,
     UserUpdate,
 )
 
+
 # --- FastAPI APP INITIALIZATION ---
-app = FastAPI()
+app = FastAPI(lifespan=lifespan)
 
 # Add CORS middleware
 origins = [
@@ -99,10 +128,6 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# Create all database tables on startup
-@app.on_event("startup")
-async def on_startup():
-    Base.metadata.create_all(bind=engine)
 
 
 # --- API ROUTERS ---
@@ -111,17 +136,29 @@ app.include_router(
     fastapi_users.get_auth_router(auth_backend), prefix="/auth/jwt", tags=["auth"]
 )
 app.include_router(
-    fastapi_users.get_register_router(UserRead, UserCreate), prefix="/auth", tags=["auth"]
+    fastapi_users.get_register_router(UserRead, UserCreate),
+    prefix="/auth",
+    tags=["auth"],
 )
+app.include_router(
+    fastapi_users.get_reset_password_router(),
+    prefix="/auth",
+    tags=["auth"],
+)
+
 
 # Root endpoint
 @app.get("/")
 def read_root():
-  return {"message": "Welcome to the TubeMetrics API"}
+    return {"message": "Welcome to the TubeMetrics API"}
+
 
 # Example protected endpoint
 @app.get("/users/me", response_model=UserRead)
-async def authenticated_route(user: UserTable = Depends(fastapi_users.get_current_active_user)):
+async def authenticated_route(
+    user: User = Depends(fastapi_users.get_current_active_user),
+):
     return user
 
-# Note: The YouTube stats logic will be added back into new, protected endpoints later.
+
+# We will re-add the YouTube stats logic in protected endpoints next.
