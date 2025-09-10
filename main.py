@@ -5,6 +5,9 @@ from datetime import datetime
 from typing import AsyncGenerator
 from fastapi import Depends
 from fastapi_users.manager import BaseUserManager, UUIDIDMixin
+from sqlalchemy import String, Text, Boolean, select
+from pydantic import BaseModel
+from fastapi import HTTPException, status
 
 from fastapi import Depends, FastAPI
 from fastapi.middleware.cors import CORSMiddleware
@@ -79,6 +82,31 @@ cookie_transport = CookieTransport(cookie_name="tubemetrics",
     cookie_samesite="none",
     cookie_httponly=True,)
 
+
+class OnboardingProfile(Base):
+    __tablename__ = "onboarding_profiles"
+    id = Column(Integer, primary_key=True, index=True)
+    user_id = Column(UUID(as_uuid=True), ForeignKey("user.id"), unique=True, nullable=False)
+
+    role = Column(String(100), nullable=False)                  # e.g., "Solo creator"
+    primary_goal = Column(String(200), nullable=False)          # e.g., "Increase retention"
+    niche = Column(String(200), nullable=True)                  # e.g., "Tech explainers"
+    posting_cadence = Column(String(50), nullable=True)         # e.g., "2/wk"
+    audience_desc = Column(Text, nullable=True)
+    is_complete = Column(Boolean, default=True)
+
+    class OnboardingIn(BaseModel):
+        role: str
+        primary_goal: str
+        niche: str | None = None
+        posting_cadence: str | None = None
+        audience_desc: str | None = None
+        is_complete: bool = True
+
+class OnboardingOut(OnboardingIn):
+    id: int
+
+
 def get_jwt_strategy() -> JWTStrategy:
     return JWTStrategy(secret=SECRET, lifetime_seconds=3600)
 
@@ -126,6 +154,65 @@ app.include_router(
     prefix="/auth",
     tags=["auth"],
 )
+# ---- Onboarding Schemas ----
+class OnboardingIn(BaseModel):
+    role: str
+    primary_goal: str
+    niche: str | None = None
+    posting_cadence: str | None = None
+    audience_desc: str | None = None
+    is_complete: bool = True
+
+class OnboardingOut(OnboardingIn):
+    id: int
+
+# ---- Onboarding Routes ----
+@app.post("/onboarding", response_model=OnboardingOut)
+async def upsert_onboarding(
+    payload: OnboardingIn,
+    user: User = Depends(fastapi_users.current_user()),
+    session: AsyncSession = Depends(get_async_session),
+):
+    result = await session.execute(
+        select(OnboardingProfile).where(OnboardingProfile.user_id == user.id)
+    )
+    profile = result.scalar_one_or_none()
+
+    if profile is None:
+        profile = OnboardingProfile(
+            user_id=user.id,
+            role=payload.role,
+            primary_goal=payload.primary_goal,
+            niche=payload.niche,
+            posting_cadence=payload.posting_cadence,
+            audience_desc=payload.audience_desc,
+            is_complete=payload.is_complete,
+        )
+        session.add(profile)
+    else:
+        profile.role = payload.role
+        profile.primary_goal = payload.primary_goal
+        profile.niche = payload.niche
+        profile.posting_cadence = payload.posting_cadence
+        profile.audience_desc = payload.audience_desc
+        profile.is_complete = payload.is_complete
+
+    await session.commit()
+    await session.refresh(profile)
+    return profile
+
+@app.get("/onboarding/me", response_model=OnboardingOut)
+async def get_my_onboarding(
+    user: User = Depends(fastapi_users.current_user()),
+    session: AsyncSession = Depends(get_async_session),
+):
+    result = await session.execute(
+        select(OnboardingProfile).where(OnboardingProfile.user_id == user.id)
+    )
+    profile = result.scalar_one_or_none()
+    if not profile:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Onboarding not found")
+    return profile
 
 # Root endpoint
 @app.get("/")
