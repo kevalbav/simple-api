@@ -124,5 +124,5 @@ def read_root():
 
 # Example protected endpoint
 @app.get("/users/me", response_model=UserRead)
-async def authenticated_route(user: User = Depends(auth_backend.get_current_active_user())):
+async def authenticated_route(user: User = Depends(fastapi_users.current_user())):
     return user
