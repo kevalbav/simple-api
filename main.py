@@ -3,6 +3,8 @@ import uuid
 import asyncio
 from datetime import datetime
 from typing import AsyncGenerator
+from fastapi import Depends
+from fastapi_users.manager import BaseUserManager, UUIDIDMixin
 
 from fastapi import Depends, FastAPI
 from fastapi.middleware.cors import CORSMiddleware
@@ -24,6 +26,8 @@ DATABASE_URL = os.getenv("DATABASE_URL")
 engine = create_async_engine(DATABASE_URL)
 async_session_maker = async_sessionmaker(engine, expire_on_commit=False)
 Base = declarative_base()
+
+
 
 
 # --- DATABASE MODELS ---
@@ -59,10 +63,21 @@ async def get_async_session() -> AsyncGenerator[AsyncSession, None]:
 async def get_user_db(session: AsyncSession = Depends(get_async_session)):
     yield SQLAlchemyUserDatabase(session, User)
 
+    # simple-api/main.py (below get_user_db)
+class UserManager(UUIDIDMixin, BaseUserManager[User, uuid.UUID]):
+    reset_password_token_secret = os.getenv("SECRET_KEY", "dev-secret")
+    verification_token_secret = os.getenv("SECRET_KEY", "dev-secret")
+
+async def get_user_manager(user_db=Depends(get_user_db)):
+    yield UserManager(user_db)
+
 
 # --- AUTHENTICATION SETUP ---
 SECRET = os.getenv("SECRET_KEY", "a_default_secret_key_for_local_dev")
-cookie_transport = CookieTransport(cookie_name="tubemetrics", cookie_max_age=3600)
+cookie_transport = CookieTransport(cookie_name="tubemetrics", 
+    cookie_max_age=3600,ookie_secure=True,
+    cookie_samesite="none",
+    cookie_httponly=True,)
 
 def get_jwt_strategy() -> JWTStrategy:
     return JWTStrategy(secret=SECRET, lifetime_seconds=3600)
@@ -74,9 +89,10 @@ auth_backend = AuthenticationBackend(
 )
 
 fastapi_users = FastAPIUsers[User, uuid.UUID](
-    get_user_db,
+    get_user_manager,
     [auth_backend],
 )
+
 
 # --- APP LIFESPAN ---
 @asynccontextmanager
@@ -95,7 +111,7 @@ origins = [
 app.add_middleware(
     CORSMiddleware,
     allow_origins=origins,
-    allow_credentials=True,
+    allow_credentials=True,   # <- important
     allow_methods=["*"],
     allow_headers=["*"],
 )
