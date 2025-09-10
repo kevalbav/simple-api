@@ -80,14 +80,7 @@ auth_backend = AuthenticationBackend(
     get_strategy=get_jwt_strategy,
 )
 
-fastapi_users = FastAPIUsers[User, uuid.UUID](
-    get_user_db,
-    [auth_backend],
-    User,
-    UserCreate,
-    UserRead,
-    UserUpdate,
-)
+fastapi_users = FastAPIUsers[User, uuid.UUID](get_user_db, [auth_backend])
 
 # --- APP LIFESPAN ---
 @asynccontextmanager
