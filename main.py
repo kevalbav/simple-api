@@ -37,7 +37,8 @@ class UserUpdate(schemas.BaseUserUpdate):
 
 # The SQLAlchemy model for the 'user' table in the database
 class UserTable(Base, SQLAlchemyBaseUserTable):
-    pass
+     id = Column(Integer, primary_key=True)
+
 
 # Pydantic model for database representation (used internally)
 class UserDB(UserRead, models.BaseUserDB):
